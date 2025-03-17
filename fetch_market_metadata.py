@@ -3,7 +3,7 @@ import os
 import json
 import logging
 import requests
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any
 
 # Set up logging
 logging.basicConfig(
@@ -84,8 +84,28 @@ def fetch_market_metadata(limit: int = 500) -> Dict[str, Any]:
         # Parse the response
         markets_data = response.json()
         
+        # Handle case where markets_data might be a string
+        if isinstance(markets_data, str):
+            try:
+                markets_data = json.loads(markets_data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse markets_data string: {str(e)}")
+                raise Exception(f"Failed to parse markets_data string: {str(e)}")
+        
+        # Handle case where markets_data might not be a list
+        if not isinstance(markets_data, list):
+            if isinstance(markets_data, dict) and "markets" in markets_data:
+                markets_data = markets_data["markets"]
+            else:
+                logger.error(f"Unexpected format for markets_data: {type(markets_data)}")
+                raise Exception(f"Unexpected format for markets_data: {type(markets_data)}")
+        
         # Process each market
         for market in markets_data:
+            if not isinstance(market, dict):
+                logger.warning(f"Skipping non-dictionary market: {market}")
+                continue
+                
             market_slug = market.get("market_slug")
             condition_id = market.get("condition_id")
             
@@ -155,6 +175,10 @@ def test_fetch_market_metadata() -> None:
             return
             
         # Get the first market's metadata
+        if not result["market_list"]:
+            print("❌ Test failed: No markets found in the result.")
+            return
+            
         first_market_slug = result["market_list"][0]
         sample_market = result["market_metadata"][first_market_slug]
         
