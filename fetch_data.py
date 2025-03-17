@@ -3,6 +3,7 @@ import requests
 import json
 import logging
 import sys
+import os
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
@@ -15,6 +16,11 @@ logger = logging.getLogger(__name__)
 
 # API endpoint
 POLYMARKET_API_URL = "https://gamma-api.polymarket.com/query"
+
+# API credentials (from environment variables or hardcoded for development only)
+API_KEY = os.environ.get("API_KEY", "f9637c32-3fdb-d331-e23a-1a97884c5b8a")
+API_SECRET = os.environ.get("API_SECRET", "DXYWZPgwDjNMO1TxR3kz0q9-32O_VhY-LyHhH4XPJCg=")
+API_PASSPHRASE = os.environ.get("API_PASSPHRASE", "ea5e45d482718c5d2792f21b1e246c989d6f4b98090529ce1dc2be9e871a1d8a")
 
 def get_query_string() -> str:
     """
@@ -45,7 +51,7 @@ def get_query_string() -> str:
 
 def fetch_query_results(query: str) -> Dict[str, Any]:
     """
-    Fetches data from Polymarket's GraphQL API.
+    Fetches data from Polymarket's GraphQL API with authentication.
     
     Args:
         query (str): The GraphQL query string.
@@ -54,16 +60,34 @@ def fetch_query_results(query: str) -> Dict[str, Any]:
         Dict[str, Any]: The JSON response from the API.
         
     Raises:
-        Exception: If the request fails or returns an error.
+        Exception: If the request fails, returns an error, or authentication fails.
     """
+    # Check if API credentials are set
+    if not all([API_KEY, API_SECRET, API_PASSPHRASE]):
+        error_msg = "API credentials not fully set. Please set API_KEY, API_SECRET, and API_PASSPHRASE environment variables."
+        logger.error(error_msg)
+        raise Exception(error_msg)
+    
     try:
+        # Set up headers with authentication
+        headers = {
+            "Content-Type": "application/json",
+            "API-KEY": API_KEY,
+            "API-SECRET": API_SECRET,
+            "API-PASSPHRASE": API_PASSPHRASE
+        }
+        
+        logger.info("Sending authenticated request to Polymarket API")
         response = requests.post(
             POLYMARKET_API_URL,
             json={"query": query},
-            headers={"Content-Type": "application/json"}
+            headers=headers
         )
         
         # Check if request was successful
+        if response.status_code == 401 or response.status_code == 403:
+            raise Exception(f"Authentication failed. Status code: {response.status_code}")
+        
         response.raise_for_status()
         
         # Parse the response
