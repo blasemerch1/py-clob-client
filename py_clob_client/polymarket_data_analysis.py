@@ -54,12 +54,30 @@ def get_market_data(limit=20, offset=0):
         response = requests.get(f"{CLOB_API_URL}/markets", headers=headers, params=params)
         
         if response.status_code == 200:
-            return response.json()
+            data = response.json()
+            
+            # Debug: Print the raw API response structure
+            print("\n--- Raw API Response Structure ---")
+            print(json.dumps({k: type(v).__name__ for k, v in data.items()}, indent=2))
+            
+            # Check if 'markets' key exists in the response
+            if 'markets' not in data:
+                print("\nERROR: 'markets' key not found in API response!")
+                print("\n--- Raw API Response Content ---")
+                print(json.dumps(data, indent=2)[:1000]) # Print first 1000 chars to avoid overwhelming output
+                print("..." if len(json.dumps(data)) > 1000 else "")
+                return None
+                
+            return data
         else:
             print(f"API Error: {response.status_code} - {response.text}")
             return None
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse API response as JSON: {e}")
+        print(f"Raw response: {response.text[:500]}...")  # Print first 500 chars of the response
         return None
 
 
@@ -90,6 +108,10 @@ def get_market_orderbook(market_id):
     except requests.exceptions.RequestException as e:
         print(f"Request failed: {e}")
         return None
+    except json.JSONDecodeError as e:
+        print(f"Failed to parse orderbook API response as JSON: {e}")
+        print(f"Raw response: {response.text[:500]}...")  # Print first 500 chars of the response
+        return None
 
 
 def analyze_market_data(market_data):
@@ -117,6 +139,7 @@ def analyze_market_data(market_data):
         
     if 'markets' not in market_data:
         insights["error"] = "Invalid market data format: 'markets' key not found"
+        print("\nAvailable keys in market_data:", list(market_data.keys()))
         return insights
     
     # Process valid market data
@@ -148,11 +171,27 @@ if __name__ == "__main__":
     
     # Fetch market data
     market_data = get_market_data()
+    
+    if market_data is None:
+        print("Failed to fetch market data from the API. See the errors above for details.")
+        exit(1)
+        
     insights = analyze_market_data(market_data)
     
     # Check for errors
     if insights["error"]:
         print(f"Error: {insights['error']}")
+        
+        # Print the actual response structure to help debug
+        print("\nActual response structure:")
+        if market_data:
+            print(f"Response type: {type(market_data)}")
+            if isinstance(market_data, dict):
+                print(f"Available keys: {list(market_data.keys())}")
+                for key, value in market_data.items():
+                    print(f"Key: {key}, Type: {type(value)}")
+                    if isinstance(value, (list, dict)):
+                        print(f"  Length/Size: {len(value)}")
     else:
         print("\n--- Market Overview ---")
         print(f"Total Markets: {insights['total_markets']}")
