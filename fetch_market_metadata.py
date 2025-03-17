@@ -6,6 +6,7 @@ import sys
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 from datetime import datetime
+import random
 
 from py_clob_client.client import ClobClient
 from py_clob_client.clob_types import ApiCreds
@@ -17,12 +18,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def fetch_market_metadata() -> Dict[str, Any]:
+def fetch_market_metadata(limit=500) -> Dict[str, Any]:
     """
-    Fetches market metadata from the Polymarket CLOB API.
+    Fetches market metadata from the Polymarket CLOB API, limited to specified number of markets.
+    
+    Args:
+        limit (int): Maximum number of markets to fetch. Defaults to 500.
     
     Returns:
-        Dict[str, Any]: Dictionary containing market metadata.
+        Dict[str, Any]: Dictionary containing market metadata indexed by market slugs.
         
     Raises:
         Exception: If API credentials are missing or API requests fail.
@@ -40,7 +44,7 @@ def fetch_market_metadata() -> Dict[str, Any]:
         logger.error(error_msg)
         raise Exception(error_msg)
     
-    logger.info("Initializing CLOB client with credentials")
+    logger.info(f"Initializing CLOB client with credentials to fetch {limit} markets")
     
     try:
         # Initialize the CLOB client with credentials
@@ -53,13 +57,13 @@ def fetch_market_metadata() -> Dict[str, Any]:
         # Create chain_id 137 for Polygon network
         client = ClobClient(host=api_url, chain_id=137, key=pk, creds=creds)
         
-        logger.info("Fetching markets from Polymarket CLOB API")
+        logger.info(f"Fetching up to {limit} markets from Polymarket CLOB API")
         
-        # Fetch all markets
+        # Fetch markets
         markets_data = []
         next_cursor = "MA=="  # Initial cursor
         
-        while next_cursor and next_cursor != "":
+        while next_cursor and next_cursor != "" and len(markets_data) < limit:
             try:
                 response = client.get_markets(next_cursor=next_cursor)
                 
@@ -68,18 +72,20 @@ def fetch_market_metadata() -> Dict[str, Any]:
                     break
                 
                 market_batch = response["data"]
-                markets_data.extend(market_batch)
+                
+                # Only add markets up to the limit
+                remaining = limit - len(markets_data)
+                markets_data.extend(market_batch[:remaining])
+                
+                logger.info(f"Fetched batch of {len(market_batch[:remaining])} markets. Total: {len(markets_data)}/{limit}")
+                
+                # Stop if we've reached the limit or if no more data
+                if len(markets_data) >= limit or len(market_batch) == 0:
+                    break
                 
                 # Update cursor for pagination
                 next_cursor = response.get("next_cursor", "")
                 
-                logger.info(f"Fetched batch of {len(market_batch)} markets. Total: {len(markets_data)}")
-                
-                # Handle rate limiting
-                if len(market_batch) == 0 or next_cursor == "":
-                    logger.info("Reached end of markets data")
-                    break
-                    
             except Exception as e:
                 logger.error(f"Error fetching markets batch: {str(e)}")
                 # Continue with next batch if possible
@@ -88,8 +94,11 @@ def fetch_market_metadata() -> Dict[str, Any]:
                     raise
                 break
         
-        # Process market data to extract metadata
-        processed_markets = []
+        logger.info(f"Processing metadata for {len(markets_data)} markets")
+        
+        # Create market metadata organized by market slug
+        metadata = {}
+        market_slugs = []
         
         for market in markets_data:
             try:
@@ -100,70 +109,56 @@ def fetch_market_metadata() -> Dict[str, Any]:
                     logger.warning(f"Market missing condition_id, skipping: {market}")
                     continue
                 
+                # Extract or generate a market slug
+                market_slug = market.get("slug") or f"market_{condition_id}"
+                market_slugs.append(market_slug)
+                
                 # Fetch detailed market data
                 market_detail = client.get_market(condition_id)
                 
-                # Fetch tick size for this market
-                tick_size = None
-                if "token_ids" in market and len(market["token_ids"]) > 0:
-                    try:
-                        token_id = market["token_ids"][0]
-                        tick_size = client.get_tick_size(token_id)
-                    except Exception as e:
-                        logger.warning(f"Failed to get tick size for token {token_id}: {str(e)}")
-                
-                # Determine if market is 50/50 outcome
-                is_fifty_fifty = False
-                if "token_ids" in market and len(market["token_ids"]) == 2:
-                    is_fifty_fifty = True
+                # Extract tags if available
+                tags = []
+                if "categories" in market:
+                    tags = market["categories"]
+                elif "category" in market:
+                    tags = [market["category"]]
                 
                 # Extract required metadata
-                market_data = {
-                    "market_id": condition_id,
-                    "question": market.get("question", "Unknown"),
-                    "description": market_detail.get("description", ""),
-                    "status": market.get("status", "Unknown"),
-                    "outcome_tokens": market.get("outcomes", []),
-                    "token_ids": market.get("token_ids", []),
-                    "minimum_order_size": market_detail.get("min_order_size", "0"),
-                    "tick_size": tick_size,
-                    "is_fifty_fifty": is_fifty_fifty,
-                    "created_at": market.get("created_at", ""),
-                    "updated_at": market.get("updated_at", ""),
-                    "resolution_time": market.get("resolution_time", ""),
-                    "volume": market.get("volume", "0")
+                metadata[market_slug] = {
+                    "metadata": {
+                        "question": market.get("question", "Unknown"),
+                        "description": market_detail.get("description", ""),
+                        "status": market.get("status", "Unknown"),
+                        "tags": tags
+                    }
                 }
-                
-                processed_markets.append(market_data)
                 
             except Exception as e:
                 logger.warning(f"Error processing market {market.get('condition_id', 'unknown')}: {str(e)}")
                 continue
         
-        # Prepare final metadata object
-        metadata = {
-            "markets": processed_markets,
-            "retrieved_at": datetime.utcnow().isoformat(),
-            "total_markets": len(processed_markets)
-        }
+        logger.info(f"Successfully retrieved metadata for {len(metadata)} markets")
         
-        # Save to file
-        file_path = os.path.expanduser("~/workspace/market_metadata.json")
-        save_to_json(metadata, file_path)
+        # Save metadata to file
+        metadata_file_path = os.path.expanduser("~/workspace/market_metadata.json")
+        save_to_json(metadata, metadata_file_path)
         
-        logger.info(f"Successfully retrieved metadata for {len(processed_markets)} markets")
+        # Save market slugs list to file
+        market_list_file_path = os.path.expanduser("~/workspace/market_list.json")
+        save_to_json(market_slugs, market_list_file_path)
+        
         return metadata
         
     except Exception as e:
         logger.error(f"Failed to fetch market metadata: {str(e)}")
         raise
     
-def save_to_json(data: Dict[str, Any], filename: str) -> None:
+def save_to_json(data: Any, filename: str) -> None:
     """
-    Saves the market metadata to a JSON file.
+    Saves data to a JSON file.
     
     Args:
-        data (Dict[str, Any]): The market metadata.
+        data (Any): The data to save.
         filename (str): The path where to save the file.
         
     Raises:
@@ -182,16 +177,59 @@ def save_to_json(data: Dict[str, Any], filename: str) -> None:
         logger.error(f"Failed to save data to {filename}: {str(e)}")
         raise Exception(f"Failed to save data to {filename}: {str(e)}")
 
+def test_single_market():
+    """
+    Test function to fetch and print data for a single market.
+    """
+    logger.info("Running test: fetching data for a single market")
+    try:
+        # Fetch all metadata (limited to 500 markets)
+        metadata = fetch_market_metadata(limit=500)
+        
+        if not metadata:
+            logger.error("No markets found in metadata")
+            return
+        
+        # Select one random market for testing
+        market_slug = random.choice(list(metadata.keys()))
+        market_data = metadata[market_slug]
+        
+        print("\n==== TEST MARKET DATA ====")
+        print(f"Market Slug: {market_slug}")
+        print(f"Question: {market_data['metadata']['question']}")
+        print(f"Status: {market_data['metadata']['status']}")
+        print(f"Tags: {', '.join(market_data['metadata']['tags'])}")
+        print(f"Description: {market_data['metadata']['description'][:100]}...")
+        print("========================\n")
+        
+        logger.info("Test completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Test failed: {str(e)}")
+
 def main():
     """
     Main function to execute the script.
     """
-    try:
-        fetch_market_metadata()
-        return 0
-    except Exception as e:
-        logger.error(f"Script execution failed: {str(e)}")
-        return 1
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        # Run test with a single market
+        try:
+            test_single_market()
+            return 0
+        except Exception as e:
+            logger.error(f"Test execution failed: {str(e)}")
+            return 1
+    else:
+        # Run normal operation
+        try:
+            fetch_market_metadata()
+            print("Script executed successfully. Market metadata saved to ~/workspace/market_metadata.json")
+            print("Market list saved to ~/workspace/market_list.json")
+            print("To run the test for a single market, use: python fetch_market_metadata.py --test")
+            return 0
+        except Exception as e:
+            logger.error(f"Script execution failed: {str(e)}")
+            return 1
 
 if __name__ == "__main__":
     sys.exit(main())
