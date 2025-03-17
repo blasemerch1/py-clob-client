@@ -60,11 +60,11 @@ def get_market_data(limit=20, offset=0):
             print("\n--- Raw API Response Structure ---")
             print(json.dumps({k: type(v).__name__ for k, v in data.items()}, indent=2))
             
-            # Check if 'markets' key exists in the response
-            if 'markets' not in data:
-                print("\nERROR: 'markets' key not found in API response!")
+            # Check if expected keys exist in the response
+            if 'markets' not in data and 'data' not in data:
+                print("\nERROR: Neither 'markets' nor 'data' key found in API response!")
                 print("\n--- Raw API Response Content ---")
-                print(json.dumps(data, indent=2)[:1000]) # Print first 1000 chars to avoid overwhelming output
+                print(json.dumps(data, indent=2)[:1000])  # Print first 1000 chars to avoid overwhelming output
                 print("..." if len(json.dumps(data)) > 1000 else "")
                 return None
                 
@@ -136,32 +136,93 @@ def analyze_market_data(market_data):
     if not market_data:
         insights["error"] = "No market data received from API"
         return insights
+    
+    # Check for 'markets' key (old API structure)
+    if 'markets' in market_data:
+        insights["total_markets"] = len(market_data['markets'])
         
-    if 'markets' not in market_data:
-        insights["error"] = "Invalid market data format: 'markets' key not found"
+        for market in market_data['markets']:
+            is_active = market.get('status') == 'active'
+            
+            if is_active:
+                insights['active_markets'] += 1
+            
+            market_summary = {
+                "id": market.get('id', 'unknown'),
+                "name": market.get('name', 'unnamed'),
+                "status": market.get('status', 'unknown'),
+                "condition": market.get('condition', 'unknown'),
+                "created_at": market.get('createdAt', ''),
+                "updated_at": market.get('updatedAt', ''),
+                "is_active": is_active
+            }
+            
+            insights['market_summary'].append(market_summary)
+    
+    # Check for 'data' key (new API structure)
+    elif 'data' in market_data:
+        data = market_data['data']
+        
+        # If data is a list, count it directly
+        if isinstance(data, list):
+            insights["total_markets"] = len(data)
+            
+            for market in data:
+                is_active = market.get('status') == 'active'
+                
+                if is_active:
+                    insights['active_markets'] += 1
+                
+                market_summary = {
+                    "id": market.get('id', 'unknown'),
+                    "name": market.get('name', 'unnamed'),
+                    "status": market.get('status', 'unknown'),
+                    "condition": market.get('condition', 'unknown'),
+                    "created_at": market.get('createdAt', ''),
+                    "updated_at": market.get('updatedAt', ''),
+                    "is_active": is_active
+                }
+                
+                insights['market_summary'].append(market_summary)
+        
+        # If data is a dictionary with market IDs as keys
+        elif isinstance(data, dict):
+            insights["total_markets"] = len(data)
+            
+            for market_id, market in data.items():
+                # Ensure market is a dictionary
+                if not isinstance(market, dict):
+                    continue
+                
+                # Add ID from the key if not in the market data
+                if 'id' not in market:
+                    market['id'] = market_id
+                
+                is_active = market.get('status') == 'active'
+                
+                if is_active:
+                    insights['active_markets'] += 1
+                
+                market_summary = {
+                    "id": market.get('id', 'unknown'),
+                    "name": market.get('name', 'unnamed'),
+                    "status": market.get('status', 'unknown'),
+                    "condition": market.get('condition', 'unknown'),
+                    "created_at": market.get('createdAt', ''),
+                    "updated_at": market.get('updatedAt', ''),
+                    "is_active": is_active
+                }
+                
+                insights['market_summary'].append(market_summary)
+        else:
+            insights["error"] = f"Invalid 'data' format: expected list or dict, got {type(data).__name__}"
+            return insights
+    
+    # Neither key exists
+    else:
+        insights["error"] = "Invalid market data format: neither 'markets' nor 'data' key found"
         print("\nAvailable keys in market_data:", list(market_data.keys()))
         return insights
-    
-    # Process valid market data
-    insights["total_markets"] = len(market_data['markets'])
-    
-    for market in market_data['markets']:
-        is_active = market.get('status') == 'active'
-        
-        if is_active:
-            insights['active_markets'] += 1
-        
-        market_summary = {
-            "id": market.get('id', 'unknown'),
-            "name": market.get('name', 'unnamed'),
-            "status": market.get('status', 'unknown'),
-            "condition": market.get('condition', 'unknown'),
-            "created_at": market.get('createdAt', ''),
-            "updated_at": market.get('updatedAt', ''),
-            "is_active": is_active
-        }
-        
-        insights['market_summary'].append(market_summary)
     
     return insights
 
