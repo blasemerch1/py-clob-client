@@ -69,6 +69,7 @@ def fetch_market_metadata(limit: int = 500) -> Dict[str, Dict[str, Any]]:
             max_retries = 3
             retry_delay = 2  # seconds
             
+            data = None
             for retry in range(max_retries):
                 try:
                     logger.info(f"Making API request (attempt {retry + 1}/{max_retries})")
@@ -96,6 +97,10 @@ def fetch_market_metadata(limit: int = 500) -> Dict[str, Dict[str, Any]]:
                         logger.error(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
                         raise
             
+            if not data:
+                logger.error("Failed to retrieve valid data from API")
+                break
+                
             # Process markets from the current page
             current_markets = data.get("data", [])
             next_cursor = data.get("next_cursor", end_cursor)
@@ -105,13 +110,21 @@ def fetch_market_metadata(limit: int = 500) -> Dict[str, Dict[str, Any]]:
                 if count >= limit:
                     break
                 
+                # Ensure we have a valid market slug
                 market_slug = market.get("slug")
+                if not market_slug:
+                    logger.warning("Skipping market with no slug")
+                    continue
+                
                 condition_id = market.get("condition_id")
                 
                 # Skip markets without condition_id
                 if not condition_id:
                     logger.warning(f"Skipping market {market_slug}: Missing condition_id")
-                    skipped_markets[market_slug] = market
+                    skipped_markets[market_slug] = {
+                        "reason": "Missing condition_id",
+                        "market_data": market
+                    }
                     continue
                 
                 # Extract relevant metadata
@@ -142,12 +155,16 @@ def fetch_market_metadata(limit: int = 500) -> Dict[str, Dict[str, Any]]:
     
     except Exception as e:
         logger.error(f"Error fetching market metadata: {str(e)}")
+        # Save whatever data we have collected so far
+        if markets_data or market_slugs or skipped_markets:
+            logger.info("Saving partial results before exiting due to error")
+            save_results(markets_data, market_slugs, skipped_markets)
         raise
 
 def save_results(
     markets_data: Dict[str, Dict[str, Any]], 
     market_slugs: List[str], 
-    skipped_markets: Dict[str, Any]
+    skipped_markets: Dict[str, Dict[str, Any]]
 ) -> None:
     """
     Saves the fetched data to JSON files.
@@ -155,27 +172,41 @@ def save_results(
     Args:
         markets_data: Dictionary of market metadata keyed by market slug.
         market_slugs: List of market slugs.
-        skipped_markets: Dictionary of skipped markets.
+        skipped_markets: Dictionary of skipped markets with reasons.
     """
     try:
+        # Ensure output directory exists
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        
         # Save market metadata
-        metadata_file = os.path.join(OUTPUT_DIR, "market_metadata.json")
-        with open(metadata_file, 'w') as f:
-            json.dump(markets_data, f, indent=2)
-        logger.info(f"Saved market metadata to {metadata_file}")
+        if markets_data:
+            metadata_file = os.path.join(OUTPUT_DIR, "market_metadata.json")
+            with open(metadata_file, 'w') as f:
+                json.dump(markets_data, f, indent=2)
+            logger.info(f"Saved market metadata for {len(markets_data)} markets to {metadata_file}")
+        else:
+            logger.warning("No market metadata to save")
         
         # Save market slugs list
-        slugs_file = os.path.join(OUTPUT_DIR, "market_list.json")
-        with open(slugs_file, 'w') as f:
-            json.dump(market_slugs, f, indent=2)
-        logger.info(f"Saved market slugs to {slugs_file}")
+        if market_slugs:
+            slugs_file = os.path.join(OUTPUT_DIR, "market_list.json")
+            with open(slugs_file, 'w') as f:
+                json.dump(market_slugs, f, indent=2)
+            logger.info(f"Saved {len(market_slugs)} market slugs to {slugs_file}")
+        else:
+            logger.warning("No market slugs to save")
         
         # Save skipped markets if any
         if skipped_markets:
+            # Format skipped markets to only include reason
+            formatted_skipped = {
+                slug: {"reason": data.get("reason", "Unknown reason")}
+                for slug, data in skipped_markets.items()
+            }
             skipped_file = os.path.join(OUTPUT_DIR, "skipped_markets.json")
             with open(skipped_file, 'w') as f:
-                json.dump(skipped_markets, f, indent=2)
-            logger.info(f"Saved skipped markets to {skipped_file}")
+                json.dump(formatted_skipped, f, indent=2)
+            logger.info(f"Saved {len(skipped_markets)} skipped markets to {skipped_file}")
     
     except Exception as e:
         logger.error(f"Error saving results: {str(e)}")
@@ -196,13 +227,16 @@ def test_fetch_market_metadata():
             return
         
         # Get the first market
-        market_slug = next(iter(market_data))
-        market_metadata = market_data[market_slug]
-        
-        print("✅ Test successful!")
-        print(f"Market slug: {market_slug}")
-        print("Market metadata:")
-        print(json.dumps(market_metadata, indent=2))
+        if market_data:
+            market_slug = next(iter(market_data))
+            market_metadata = market_data[market_slug]
+            
+            print("✅ Test successful!")
+            print(f"Market slug: {market_slug}")
+            print("Market metadata:")
+            print(json.dumps(market_metadata, indent=2))
+        else:
+            print("❌ Test failed: No markets found in the response.")
         
     except Exception as e:
         print(f"❌ Test failed with error: {str(e)}")
