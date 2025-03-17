@@ -3,7 +3,7 @@ import os
 import json
 import logging
 import sys
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from pathlib import Path
 from datetime import datetime
 import random
@@ -18,15 +18,18 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def fetch_market_metadata(limit=500) -> Dict[str, Any]:
+def fetch_market_metadata(limit=500) -> Tuple[Dict[str, Any], List[str], List[Dict]]:
     """
-    Fetches market metadata from the Polymarket CLOB API, limited to specified number of markets.
+    Fetches market metadata from the Polymarket CLOB API, limited to exactly 500 markets.
     
     Args:
         limit (int): Maximum number of markets to fetch. Defaults to 500.
     
     Returns:
-        Dict[str, Any]: Dictionary containing market metadata indexed by market slugs.
+        Tuple containing:
+        - Dict[str, Any]: Dictionary of market metadata indexed by market slugs
+        - List[str]: List of valid market slugs
+        - List[Dict]: List of skipped markets with missing condition_id
         
     Raises:
         Exception: If API credentials are missing or API requests fail.
@@ -57,56 +60,39 @@ def fetch_market_metadata(limit=500) -> Dict[str, Any]:
         # Create chain_id 137 for Polygon network
         client = ClobClient(host=api_url, chain_id=137, key=pk, creds=creds)
         
-        logger.info(f"Fetching up to {limit} markets from Polymarket CLOB API")
+        logger.info(f"Fetching exactly {limit} markets from Polymarket CLOB API")
         
-        # Fetch markets
-        markets_data = []
-        next_cursor = "MA=="  # Initial cursor
+        # Fetch a single batch of markets (no pagination/looping)
+        response = client.get_markets(next_cursor="MA==")
         
-        while next_cursor and next_cursor != "" and len(markets_data) < limit:
-            try:
-                response = client.get_markets(next_cursor=next_cursor)
-                
-                if "data" not in response:
-                    logger.warning("Unexpected response format. Missing 'data' field.")
-                    break
-                
-                market_batch = response["data"]
-                
-                # Only add markets up to the limit
-                remaining = limit - len(markets_data)
-                markets_data.extend(market_batch[:remaining])
-                
-                logger.info(f"Fetched batch of {len(market_batch[:remaining])} markets. Total: {len(markets_data)}/{limit}")
-                
-                # Stop if we've reached the limit or if no more data
-                if len(markets_data) >= limit or len(market_batch) == 0:
-                    break
-                
-                # Update cursor for pagination
-                next_cursor = response.get("next_cursor", "")
-                
-            except Exception as e:
-                logger.error(f"Error fetching markets batch: {str(e)}")
-                # Continue with next batch if possible
-                if next_cursor == "MA==":
-                    # If this is the first batch, we can't proceed
-                    raise
-                break
+        if "data" not in response:
+            logger.error("Unexpected response format. Missing 'data' field.")
+            raise Exception("API response missing 'data' field")
         
-        logger.info(f"Processing metadata for {len(markets_data)} markets")
+        # Take only the first 'limit' markets
+        markets_data = response["data"][:limit]
+        
+        if len(markets_data) < limit:
+            logger.warning(f"Requested {limit} markets but only received {len(markets_data)}. Processing what was obtained.")
+        else:
+            logger.info(f"Successfully fetched {len(markets_data)} markets")
         
         # Create market metadata organized by market slug
         metadata = {}
         market_slugs = []
+        skipped_markets = []
         
         for market in markets_data:
             try:
-                # Get market details
+                # Get market details - check for missing condition_id
                 condition_id = market.get("condition_id")
                 
                 if not condition_id:
-                    logger.warning(f"Market missing condition_id, skipping: {market}")
+                    logger.warning(f"Market missing condition_id, logging for debugging: {market.get('question', 'Unknown question')}")
+                    skipped_markets.append({
+                        "reason": "missing_condition_id",
+                        "market_data": market
+                    })
                     continue
                 
                 # Extract or generate a market slug
@@ -114,7 +100,11 @@ def fetch_market_metadata(limit=500) -> Dict[str, Any]:
                 market_slugs.append(market_slug)
                 
                 # Fetch detailed market data
-                market_detail = client.get_market(condition_id)
+                try:
+                    market_detail = client.get_market(condition_id)
+                except Exception as detail_error:
+                    logger.warning(f"Error fetching details for market {condition_id}: {str(detail_error)}")
+                    market_detail = {}
                 
                 # Extract tags if available
                 tags = []
@@ -134,10 +124,16 @@ def fetch_market_metadata(limit=500) -> Dict[str, Any]:
                 }
                 
             except Exception as e:
-                logger.warning(f"Error processing market {market.get('condition_id', 'unknown')}: {str(e)}")
+                logger.warning(f"Error processing market: {str(e)}")
+                skipped_markets.append({
+                    "reason": "processing_error",
+                    "error": str(e),
+                    "market_data": market
+                })
                 continue
         
         logger.info(f"Successfully retrieved metadata for {len(metadata)} markets")
+        logger.info(f"Skipped {len(skipped_markets)} markets due to missing condition_id or errors")
         
         # Save metadata to file
         metadata_file_path = os.path.expanduser("~/workspace/market_metadata.json")
@@ -147,7 +143,11 @@ def fetch_market_metadata(limit=500) -> Dict[str, Any]:
         market_list_file_path = os.path.expanduser("~/workspace/market_list.json")
         save_to_json(market_slugs, market_list_file_path)
         
-        return metadata
+        # Save skipped markets to file
+        skipped_markets_file_path = os.path.expanduser("~/workspace/skipped_markets.json")
+        save_to_json(skipped_markets, skipped_markets_file_path)
+        
+        return metadata, market_slugs, skipped_markets
         
     except Exception as e:
         logger.error(f"Failed to fetch market metadata: {str(e)}")
@@ -184,7 +184,7 @@ def test_single_market():
     logger.info("Running test: fetching data for a single market")
     try:
         # Fetch all metadata (limited to 500 markets)
-        metadata = fetch_market_metadata(limit=500)
+        metadata, market_slugs, skipped_markets = fetch_market_metadata(limit=500)
         
         if not metadata:
             logger.error("No markets found in metadata")
@@ -199,8 +199,12 @@ def test_single_market():
         print(f"Question: {market_data['metadata']['question']}")
         print(f"Status: {market_data['metadata']['status']}")
         print(f"Tags: {', '.join(market_data['metadata']['tags'])}")
-        print(f"Description: {market_data['metadata']['description'][:100]}...")
+        print(f"Description: {market_data['metadata']['description'][:100]}..." if market_data['metadata']['description'] else "Description: None")
         print("========================\n")
+        
+        print(f"Total markets processed: {len(metadata)}")
+        print(f"Total markets skipped: {len(skipped_markets)}")
+        print(f"Market list saved to ~/workspace/market_list.json with {len(market_slugs)} entries")
         
         logger.info("Test completed successfully")
         
@@ -222,9 +226,12 @@ def main():
     else:
         # Run normal operation
         try:
-            fetch_market_metadata()
-            print("Script executed successfully. Market metadata saved to ~/workspace/market_metadata.json")
+            metadata, market_slugs, skipped_markets = fetch_market_metadata()
+            print(f"Script executed successfully. Processed {len(metadata)} markets.")
+            print(f"Skipped {len(skipped_markets)} markets due to missing condition_id or errors.")
+            print("Market metadata saved to ~/workspace/market_metadata.json")
             print("Market list saved to ~/workspace/market_list.json")
+            print("Skipped markets saved to ~/workspace/skipped_markets.json")
             print("To run the test for a single market, use: python fetch_market_metadata.py --test")
             return 0
         except Exception as e:
