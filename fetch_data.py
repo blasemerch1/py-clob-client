@@ -2,6 +2,7 @@
 import requests
 import json
 import logging
+import sys
 from typing import Dict, List, Any, Optional
 from datetime import datetime
 
@@ -152,9 +153,12 @@ def save_to_json(data: List[Dict[str, Any]], filename: str = "market_data.json")
         logger.error(f"Failed to save data to {filename}: {str(e)}")
         raise Exception(f"Failed to save data to {filename}: {str(e)}")
 
-def main() -> None:
+def main() -> List[Dict[str, Any]]:
     """
     Main function to orchestrate the data fetching and saving process.
+    
+    Returns:
+        List[Dict[str, Any]]: The processed market data.
     """
     logger.info("Starting data fetch from Polymarket API")
     
@@ -164,9 +168,52 @@ def main() -> None:
         processed_data = process_market_data(raw_data)
         save_to_json(processed_data)
         logger.info(f"Successfully fetched and saved data for {len(processed_data)} markets")
+        return processed_data
     except Exception as e:
         logger.error(f"Data fetch failed: {str(e)}")
-        exit(1)
+        if __name__ == "__main__":
+            exit(1)
+        raise
+
+def test_fetch_data_script() -> None:
+    """
+    Tests the Polymarket data fetching functionality.
+    
+    This function tests if the script can successfully fetch data from Polymarket's API,
+    process it, and verify that the result contains market data.
+    """
+    print("Running test for fetch_data.py script...")
+    
+    try:
+        # Run the main function to fetch and process data
+        # Note: This will also save the file, which is fine for testing
+        processed_data = main()
+        
+        # Check if data is not empty
+        if not processed_data:
+            print("❌ Test failed: Fetched data is empty.")
+            return
+            
+        # Check if we have market data with expected fields
+        sample_market = processed_data[0]
+        required_fields = ["id", "question", "category", "is_resolved", "volume"]
+        missing_fields = [field for field in required_fields if field not in sample_market]
+        
+        if missing_fields:
+            print(f"❌ Test failed: Market data is missing required fields: {', '.join(missing_fields)}")
+            return
+            
+        # Test passed
+        print(f"✅ Test passed! Successfully fetched {len(processed_data)} markets.")
+        print(f"Sample market question: '{sample_market['question']}'")
+        print(f"Data saved to market_data.json")
+        
+    except Exception as e:
+        print(f"❌ Test failed with error: {str(e)}")
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        test_fetch_data_script()
+    else:
+        main()
+        print("Script executed successfully. To run tests, use: python fetch_data.py --test")
